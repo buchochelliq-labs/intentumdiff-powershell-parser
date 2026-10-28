@@ -14,108 +14,53 @@ jobs:
     secrets: inherit
 
   windows-arm64-component-load:
-    name: Verify Windows ARM64 Wasmtime 47.0.3 compile
+    name: Verify Windows ARM64 metered Wasmtime 48.0.7
     needs: ci
     runs-on: windows-11-arm
     timeout-minutes: 45
     steps:
-      - name: Checkout exact candidate host probe source
+      - name: Checkout exact parser and host probe
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Download exact candidate Wasm artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: parser-wasm
           path: wasm
-      - name: Download and verify official Wasmtime v47.0.3 Windows ARM64 CLI
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $archive = Join-Path $env:RUNNER_TEMP 'wasmtime-v47.0.3-aarch64-windows.zip'
-          $url = 'https://github.com/bytecodealliance/wasmtime/releases/download/v47.0.3/wasmtime-v47.0.3-aarch64-windows.zip'
-          Invoke-WebRequest -Uri $url -OutFile $archive
-          $digest = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
-          $expected = 'be35951403bcf6cbf44043b78db4bcdb9918df7e53bd66f6aef3e651cc882b28'
-          if ($digest -ne $expected) { throw "Wasmtime binary archive digest mismatch: $digest" }
-          $dest = Join-Path $env:RUNNER_TEMP 'wasmtime-v47.0.3'
-          Expand-Archive -LiteralPath $archive -DestinationPath $dest
-          $cli = @(Get-ChildItem -Path $dest -Filter wasmtime.exe -File -Recurse)
-          if ($cli.Count -ne 1) { throw "Expected exactly one Windows ARM64 Wasmtime executable, found $($cli.Count)" }
-          "WASMTIME_CLI=$($cli[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      - name: Compile exact Wasm component on real Windows ARM64
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
-          if ($arch -ne "Arm64") { throw "Expected ARM64 runner, got $arch" }
-          $components = @(Get-ChildItem -Path wasm -Filter *.wasm -File)
-          if ($components.Count -ne 1) { throw "Expected one parser Wasm, found $($components.Count)" }
-          Get-FileHash -Algorithm SHA256 $components[0].FullName
-          & $env:WASMTIME_CLI --version
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $compiled = Join-Path $env:RUNNER_TEMP 'powershell-parser.cwasm'
-          & $env:WASMTIME_CLI compile $components[0].FullName -o $compiled
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Test-Path $compiled)) { throw 'Wasmtime reported success without producing compiled output' }
-          Write-Host 'PowerShell Wasm compiled successfully with official Wasmtime v47.0.3 on Windows ARM64'
-
-      - name: Install Rust for production-equivalent Wasmtime host verification
+      - name: Install Rust host compiler
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
           toolchain: "1.95.0"
-      - name: Diagnose safe production Rust host fuel configurations
+      - name: Compile exact vetted PowerShell component with production fuel metering
         shell: pwsh
         env:
           CARGO_PROFILE_DEV_DEBUG: "false"
           CARGO_INCREMENTAL: "0"
         run: |
           $ErrorActionPreference = 'Stop'
+          $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+          if ($arch -ne 'Arm64') { throw "Expected Windows ARM64 runner, got $arch" }
           $components = @(Get-ChildItem -Path wasm -Filter *.wasm -File)
-          if ($components.Count -ne 1) { throw "Expected exactly one parser Wasm, found $($components.Count)" }
+          if ($components.Count -ne 1) { throw "Expected one parser Wasm component, found $($components.Count)" }
+
+          # Match the immutable parser bytes approved in registry #13 and Core #187.
+          $actual = (Get-FileHash -Algorithm SHA256 $components[0].FullName).Hash.ToLowerInvariant()
+          $expected = '29a7be79db83f80627e98da8513a160dc047ea972fae4e3be07d741793a30c15'
+          if ($actual -ne $expected) { throw "Unreviewed PowerShell Wasm: expected $expected, got $actual" }
+
+          # This job is no longer gated on vulnerable Wasmtime 47.0.3. The
+          # production Core #187 Cargo.toml + Cargo.lock use patched 48.0.7.
+          $manifest = Get-Content ci/windows-arm64-host-probe/Cargo.toml -Raw
+          if (-not $manifest.Contains('wasmtime = { version = "=48.0.7"')) {
+            throw 'Windows ARM64 host probe does not pin patched Wasmtime 48.0.7'
+          }
+
           cargo build --manifest-path ci/windows-arm64-host-probe/Cargo.toml
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $probe = Join-Path (Get-Location) 'ci/windows-arm64-host-probe/target/debug/intentumdiff-windows-arm64-host-probe.exe'
-          if (-not (Test-Path $probe)) { throw 'Host probe executable is missing' }
+          if (-not (Test-Path $probe)) { throw 'Production-equivalent Rust host probe was not built' }
 
-          & $probe $components[0].FullName false speed
-          if ($LASTEXITCODE -ne 0) { throw 'Unmetered baseline unexpectedly fails' }
-
-          # The production core's default metered config was independently
-          # reproduced to panic at obj.rs:332; test safe compiler variants
-          # without weakening consume_fuel(true). Each subprocess is separate
-          # because a Cranelift panic aborts the process.
-          & $probe $components[0].FullName true speed-and-size
-          $sizeExit = $LASTEXITCODE
-          & $probe $components[0].FullName true none
-          $noneExit = $LASTEXITCODE
-          Write-Host "ARM64 metered safe compiler probes: speed-and-size=$sizeExit none=$noneExit"
-          if ($sizeExit -ne 0 -and $noneExit -ne 0) {
-            throw 'Neither metered Cranelift optimization mode safely compiles the PowerShell component'
-          }
-          Write-Host 'At least one alternative metered Rust host configuration compiled; integrate and validate in Core before marking the release safe'
-
-      - name: Diagnose metered host on patched Wasmtime 48.0.7 (not release approval)
-        if: failure()
-        shell: pwsh
-        env:
-          CARGO_PROFILE_DEV_DEBUG: "false"
-          CARGO_INCREMENTAL: "0"
-        run: |
-          $ErrorActionPreference = 'Stop'
-          # Keep the production 47.0.3 pin and its failing gate unchanged.
-          # 48.0.3 fixed fuel accounting but remains exposed to the critical
-          # aarch64 br_table sandbox escape (GHSA-mghf-wjfp-p5xm) and the
-          # component-stream panic (GHSA-9pvw-hwfg-92h5). Both were fixed
-          # in 48.0.7. Probe this patched version without waiving 47.0.3.
-          $components = @(Get-ChildItem -Path wasm -Filter *.wasm -File)
-          if ($components.Count -ne 1) { throw "Expected exactly one staged component" }
-          $root = Join-Path $env:RUNNER_TEMP 'wasmtime-patched-probe'
-          New-Item -ItemType Directory -Force -Path (Join-Path $root 'src') | Out-Null
-          Copy-Item ci/windows-arm64-host-probe/src/main.rs (Join-Path $root 'src/main.rs')
-          $toml = Get-Content ci/windows-arm64-host-probe/Cargo.toml -Raw
-          if (-not $toml.Contains('=47.0.3')) { throw 'Unexpected baseline Wasmtime pin' }
-          $toml = $toml.Replace('=47.0.3', '=48.0.7')
-          [System.IO.File]::WriteAllText((Join-Path $root 'Cargo.toml'), $toml)
-          Write-Host 'Diagnostic only: Windows ARM64, Wasmtime 48.0.7, consume_fuel(true), Cranelift default'
-          cargo run --manifest-path (Join-Path $root 'Cargo.toml') -- $components[0].FullName true speed
-          if ($LASTEXITCODE -ne 0) { throw 'Patched Wasmtime 48.0.7 still failed metered host compilation' }
-          Write-Host 'Patched Wasmtime compiled this component; production 47.0.3 is STILL BLOCKED until full security, 74-language and wheel/VSIX parity gates pass'
+          # Rust Core actually calls Config::consume_fuel(true) with
+          # wasm_memory64(false). An unmetered CLI compile is not acceptance.
+          & $probe $components[0].FullName true speed
+          if ($LASTEXITCODE -ne 0) { throw 'Production metered Wasmtime 48.0.7 could not compile PowerShell Wasm' }
+          Write-Host "PASS: Windows ARM64 Wasmtime 48.0.7 metered Rust host compiled reviewed $actual"
