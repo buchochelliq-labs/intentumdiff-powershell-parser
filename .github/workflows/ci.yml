@@ -31,21 +31,19 @@ jobs:
           name: parser-wasm
           path: wasm
 
-      - name: Install matching Wasmtime runtime
-        run: python -m pip install --only-binary=:all: wasmtime==47.0.3
+      - name: Install pinned Wasmtime 47.0.3 Windows ARM64 CLI
+        run: python -m pip install --only-binary=:all: wasmtime-bin==47.0.3
 
       - name: Compile PowerShell component on Windows ARM64 (must not abort)
         shell: pwsh
         run: |
-          @'
-          from pathlib import Path
-          import wasmtime
-
-          components = list(Path("wasm").glob("*.wasm"))
-          assert len(components) == 1, components
-          config = wasmtime.Config()
-          config.wasm_component_model = True
-          engine = wasmtime.Engine(config)
-          wasmtime.Component.from_file(engine, str(components[0]))
-          print("Windows ARM64 Wasmtime component compile succeeded:", components[0])
-          '@ | python -
+          $ErrorActionPreference = 'Stop'
+          $components = @(Get-ChildItem -Path wasm -Filter *.wasm -File)
+          if ($components.Count -ne 1) { throw "Expected one parser component, found $($components.Count)" }
+          wasmtime --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $compiled = Join-Path $env:RUNNER_TEMP 'powershell-parser.cwasm'
+          wasmtime compile $components[0].FullName -o $compiled
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path $compiled)) { throw 'Wasmtime compile reported success without producing output' }
+          Write-Host "Windows ARM64 Wasmtime component compile succeeded: $($components[0].Name)"
