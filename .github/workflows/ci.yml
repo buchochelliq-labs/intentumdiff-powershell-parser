@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "fix/0.0.2-windows-arm64-cranelift-function-size"]
   pull_request:
 
 permissions:
