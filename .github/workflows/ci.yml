@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: ["main"]
+    # Exercise this isolated draft CI candidate even when PR-triggered checks do not start.
+    # Remove the temporary branch entry before merging the workflow.
+    branches: ["main", "fix/0.0.2-windows-arm64-cranelift-function-size"]
   pull_request:
 
 permissions:
