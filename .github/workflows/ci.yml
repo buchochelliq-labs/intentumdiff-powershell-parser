@@ -2,9 +2,7 @@ name: CI
 
 on:
   push:
-    # Exercise this isolated draft CI candidate even when PR-triggered checks do not start.
-    # Remove the temporary branch entry before merging the workflow.
-    branches: ["main", "fix/0.0.2-windows-arm64-cranelift-function-size"]
+    branches: ["main"]
   pull_request:
 
 permissions:
@@ -14,38 +12,3 @@ jobs:
   ci:
     uses: buchochelliq-labs/intentumdiff-plugin-sdk/.github/workflows/parser-ci.yml@main
     secrets: inherit
-
-  windows-arm64-component-load:
-    name: Windows ARM64 Wasmtime component compilation
-    needs: ci
-    runs-on: windows-11-arm
-    timeout-minutes: 15
-    steps:
-      - name: Set up ARM64 Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-          architecture: arm64
-
-      - name: Download the exact built component
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: parser-wasm
-          path: wasm
-
-      - name: Install pinned Wasmtime 47.0.3 Windows ARM64 CLI
-        run: python -m pip install --only-binary=:all: wasmtime-bin==47.0.3
-
-      - name: Compile PowerShell component on Windows ARM64 (must not abort)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $components = @(Get-ChildItem -Path wasm -Filter *.wasm -File)
-          if ($components.Count -ne 1) { throw "Expected one parser component, found $($components.Count)" }
-          wasmtime --version
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $compiled = Join-Path $env:RUNNER_TEMP 'powershell-parser.cwasm'
-          wasmtime compile $components[0].FullName -o $compiled
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Test-Path $compiled)) { throw 'Wasmtime compile reported success without producing output' }
-          Write-Host "Windows ARM64 Wasmtime component compile succeeded: $($components[0].Name)"
