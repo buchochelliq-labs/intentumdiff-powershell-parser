@@ -17,7 +17,7 @@ jobs:
     name: Verify Windows ARM64 Wasmtime 47.0.3 compile
     needs: ci
     runs-on: windows-11-arm
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - name: Download exact candidate Wasm artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -55,3 +55,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Test-Path $compiled)) { throw 'Wasmtime reported success without producing compiled output' }
           Write-Host 'PowerShell Wasm compiled successfully with official Wasmtime v47.0.3 on Windows ARM64'
+
+      - name: Install Rust for production-equivalent Wasmtime host verification
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
+        with:
+          toolchain: "1.95.0"
+      - name: Compile component with production Rust host fuel settings
+        shell: pwsh
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "false"
+          CARGO_INCREMENTAL: "0"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $components = @(Get-ChildItem -Path wasm -Filter *.wasm -File)
+          if ($components.Count -ne 1) { throw "Expected exactly one parser Wasm, found $($components.Count)" }
+          cargo run --manifest-path ci/windows-arm64-host-probe/Cargo.toml -- $components[0].FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host 'PowerShell Wasm compiled with fuel disabled AND enabled using the actual Rust host Config'
