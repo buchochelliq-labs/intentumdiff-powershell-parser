@@ -1,4 +1,4 @@
-//! Compile exact staged Wasm with the real Wasmtime 47 Rust host options.
+//! Compile exact staged Wasm with the patched Wasmtime 48.0.7 Rust host options.
 //! Run each config in a *separate process*: Cranelift's oversized-function
 //! failure panics, so a single process cannot report later configurations.
 use std::error::Error;
