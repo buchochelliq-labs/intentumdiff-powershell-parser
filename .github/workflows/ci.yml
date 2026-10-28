@@ -62,7 +62,7 @@ jobs:
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
           toolchain: "1.95.0"
-      - name: Compile component with production Rust host fuel settings
+      - name: Diagnose safe production Rust host fuel configurations
         shell: pwsh
         env:
           CARGO_PROFILE_DEV_DEBUG: "false"
@@ -71,6 +71,24 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $components = @(Get-ChildItem -Path wasm -Filter *.wasm -File)
           if ($components.Count -ne 1) { throw "Expected exactly one parser Wasm, found $($components.Count)" }
-          cargo run --manifest-path ci/windows-arm64-host-probe/Cargo.toml -- $components[0].FullName
+          cargo build --manifest-path ci/windows-arm64-host-probe/Cargo.toml
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Write-Host 'PowerShell Wasm compiled with fuel disabled AND enabled using the actual Rust host Config'
+          $probe = Join-Path (Get-Location) 'ci/windows-arm64-host-probe/target/debug/intentumdiff-windows-arm64-host-probe.exe'
+          if (-not (Test-Path $probe)) { throw 'Host probe executable is missing' }
+
+          & $probe $components[0].FullName false speed
+          if ($LASTEXITCODE -ne 0) { throw 'Unmetered baseline unexpectedly fails' }
+
+          # The production core's default metered config was independently
+          # reproduced to panic at obj.rs:332; test safe compiler variants
+          # without weakening consume_fuel(true). Each subprocess is separate
+          # because a Cranelift panic aborts the process.
+          & $probe $components[0].FullName true speed-and-size
+          $sizeExit = $LASTEXITCODE
+          & $probe $components[0].FullName true none
+          $noneExit = $LASTEXITCODE
+          Write-Host "ARM64 metered safe compiler probes: speed-and-size=$sizeExit none=$noneExit"
+          if ($sizeExit -ne 0 -and $noneExit -ne 0) {
+            throw 'Neither metered Cranelift optimization mode safely compiles the PowerShell component'
+          }
+          Write-Host 'At least one alternative metered Rust host configuration compiled; integrate and validate in Core before marking the release safe'
