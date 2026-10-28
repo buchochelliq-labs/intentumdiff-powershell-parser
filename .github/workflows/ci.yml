@@ -92,3 +92,28 @@ jobs:
             throw 'Neither metered Cranelift optimization mode safely compiles the PowerShell component'
           }
           Write-Host 'At least one alternative metered Rust host configuration compiled; integrate and validate in Core before marking the release safe'
+
+      - name: Diagnose metered host on patched Wasmtime 48.0.3 (not release approval)
+        if: failure()
+        shell: pwsh
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "false"
+          CARGO_INCREMENTAL: "0"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Keep the production 47.0.3 pin and its failing gate unchanged.
+          # This separate pinned diagnostic tests whether a security-patched
+          # Wasmtime fixes Cranelift's oversized-function compiler panic.
+          $components = @(Get-ChildItem -Path wasm -Filter *.wasm -File)
+          if ($components.Count -ne 1) { throw "Expected exactly one staged component" }
+          $root = Join-Path $env:RUNNER_TEMP 'wasmtime-patched-probe'
+          New-Item -ItemType Directory -Force -Path (Join-Path $root 'src') | Out-Null
+          Copy-Item ci/windows-arm64-host-probe/src/main.rs (Join-Path $root 'src/main.rs')
+          $toml = Get-Content ci/windows-arm64-host-probe/Cargo.toml -Raw
+          if (-not $toml.Contains('=47.0.3')) { throw 'Unexpected baseline Wasmtime pin' }
+          $toml = $toml.Replace('=47.0.3', '=48.0.3')
+          [System.IO.File]::WriteAllText((Join-Path $root 'Cargo.toml'), $toml)
+          Write-Host 'Diagnostic only: Windows ARM64, Wasmtime 48.0.3, consume_fuel(true), Cranelift default'
+          cargo run --manifest-path (Join-Path $root 'Cargo.toml') -- $components[0].FullName true speed
+          if ($LASTEXITCODE -ne 0) { throw 'Patched Wasmtime 48.0.3 still failed metered host compilation' }
+          Write-Host 'Patched Wasmtime compiled this component; production 47.0.3 is STILL BLOCKED until full security, 74-language and wheel/VSIX parity gates pass'
