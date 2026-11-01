@@ -1,0 +1,12 @@
+[package]
+name = "intentumdiff-windows-arm64-host-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# A separate host-only crate; never add Wasmtime to the guest parser.
+# Match the patched, production-locked host in intentumdiff-core #187.
+[workspace]
+
+[dependencies]
+wasmtime = { version = "=48.0.7", features = ["component-model"] }

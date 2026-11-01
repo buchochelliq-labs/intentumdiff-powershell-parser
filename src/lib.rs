@@ -357,6 +357,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn process_impl_preserves_source_judged_utf8_and_crlf_spans() {
+        // This test judges positions against the *source bytes*, independently
+        // of another API returning the same possibly incorrect semantic tree.
+        let source = "function Greet {\r\n    Write-Host 'café 🌍'\r\n}\r\n";
+        let out = process_impl(source);
+        t::assert_valid_json(&out, "process(utf8 crlf powershell)");
+        let root: SemanticNode = serde_json::from_str(&out).unwrap();
+        let lines: Vec<&str> = source.split('\n').collect();
+
+        fn check(node: &SemanticNode, lines: &[&str]) {
+            let p = &node.position;
+            let (sl, el) = (p.start_line as usize, p.end_line as usize);
+            assert!(sl <= el && el < lines.len(), "out-of-range lines: {node:?}");
+            let start = lines[sl].strip_suffix('\r').unwrap_or(lines[sl]);
+            let end = lines[el].strip_suffix('\r').unwrap_or(lines[el]);
+            let (sc, ec) = (p.start_col as usize, p.end_col as usize);
+            assert!(sc <= start.len() && start.is_char_boundary(sc), "invalid UTF-8 start: {node:?}");
+            assert!(ec <= end.len() && end.is_char_boundary(ec), "invalid UTF-8 end: {node:?}");
+            assert!(sl < el || sc <= ec, "reversed span: {node:?}");
+            for child in &node.children {
+                check(child, lines);
+            }
+        }
+
+        fn find_first<'a>(node: &'a SemanticNode, kind: &str) -> Option<&'a SemanticNode> {
+            if node.node_type == kind {
+                return Some(node);
+            }
+            node.children.iter().find_map(|child| find_first(child, kind))
+        }
+
+        check(&root, &lines);
+
+        let function = find_first(&root, "function_statement")
+            .expect("the source contains a function declaration");
+        assert_eq!(function.label, "Greet");
+        assert_eq!(
+            (function.position.start_line, function.position.start_col),
+            (0, 0),
+            "function must start at the first source byte"
+        );
+        assert_eq!(
+            (function.position.end_line, function.position.end_col),
+            (2, 1),
+            "function must end immediately after its closing brace"
+        );
+
+        let literal = find_first(&root, "string_literal")
+            .expect("the quoted Unicode string must survive semantic conversion");
+        let quoted = "'café 🌍'";
+        let line = lines[1].strip_suffix('\r').unwrap_or(lines[1]);
+        let byte_start = line.find(quoted).expect("source contains the literal");
+        assert_eq!(literal.position.start_line, 1);
+        assert_eq!(literal.position.end_line, 1);
+        assert_eq!(
+            (literal.position.start_col as usize, literal.position.end_col as usize),
+            (byte_start, byte_start + quoted.len()),
+            "literal span must use UTF-8 bytes and exclude the CRLF delimiter"
+        );
+    }
+
     fn labels_for_type(node: &SemanticNode, node_type: &str) -> Vec<String> {
         let mut labels = Vec::new();
         push_labels_for_type(node, node_type, &mut labels);

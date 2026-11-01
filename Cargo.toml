@@ -22,8 +22,11 @@ intentumdiff-plugin-sdk = { git = "https://github.com/buchochelliq-labs/intentum
 # Plugins target WASI p2 (Component Model); mirrors the monorepo's certified build profile.
 [profile.release]
 opt-level = "z"
-lto = true
-codegen-units = 1
+# Avoid whole-program inlining of the large generated PowerShell parse state
+# machine: Windows ARM64 Cranelift currently rejects an oversized function.
+# The Windows ARM64 component-load acceptance job must validate this hypothesis.
+lto = false
+codegen-units = 16
 strip = true
 panic = "abort"
 
