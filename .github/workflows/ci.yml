@@ -42,9 +42,10 @@ jobs:
           $components = @(Get-ChildItem -Path wasm -Filter *.wasm -File)
           if ($components.Count -ne 1) { throw "Expected one parser Wasm component, found $($components.Count)" }
 
-          # Match the immutable parser bytes approved in registry #13 and Core #187.
+          # Match the immutable parser bytes of the reviewed 0.0.3 candidate (powershell-parser #9;
+          # previously registry #13 / Core #187). Move this pin with every reviewed component change.
           $actual = (Get-FileHash -Algorithm SHA256 $components[0].FullName).Hash.ToLowerInvariant()
-          $expected = '29a7be79db83f80627e98da8513a160dc047ea972fae4e3be07d741793a30c15'
+          $expected = 'b47cff15ae39f73f753c26babb7fabb393089c3dac1dc1d1ef43d1aba49e3ff0'
           if ($actual -ne $expected) { throw "Unreviewed PowerShell Wasm: expected $expected, got $actual" }
 
           # This job is no longer gated on vulnerable Wasmtime 47.0.3. The
