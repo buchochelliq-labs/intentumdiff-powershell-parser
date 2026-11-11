@@ -77,14 +77,23 @@ const SEMANTIC_TYPES: &[&str] = &[
     // Expressions
     "variable",
     "string_literal",
-    "number_literal",
-    "boolean_literal",
+    // tree-sitter-powershell numeric kinds (issue #8). `integer_literal` wraps
+    // decimal/hexadecimal digits and keeps its source text as the label; without it
+    // `return 1` -> `return 2` pruned to an empty array_literal_expression.
+    // (`$true`/`$false` are `variable` leaves and already survive.)
+    "integer_literal",
+    "real_literal",
     "array_literal_expression",
     "hash_literal_expression",
     "invocation_expression",
     "member_access",
     "element_access",
     "type_literal",
+    // Named operator leaves (issue #8): `-lt` -> `-gt` must not collapse to the
+    // operand wrappers. Arithmetic/logical operators are anonymous tokens here.
+    "comparison_operator",
+    "assignement_operator",
+    "format_operator",
     // Attributes & data
     "attribute",
     "script_block",
@@ -417,6 +426,81 @@ mod tests {
             (byte_start, byte_start + quoted.len()),
             "literal span must use UTF-8 bytes and exclude the CRLF delimiter"
         );
+    }
+
+    fn parse_tree(source: &str) -> SemanticNode {
+        let out = process_impl(source);
+        t::assert_valid_json(&out, "process(issue #8)");
+        serde_json::from_str(&out).unwrap()
+    }
+
+    fn find_type<'a>(node: &'a SemanticNode, kind: &str) -> Option<&'a SemanticNode> {
+        if node.node_type == kind {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| find_type(child, kind))
+    }
+
+    /// (type, label) pairs in pre-order: the layout-free projection of a tree.
+    fn projection(node: &SemanticNode, out: &mut Vec<(String, String)>) {
+        out.push((node.node_type.clone(), node.label.clone()));
+        for child in &node.children {
+            projection(child, out);
+        }
+    }
+
+    fn span(node: &SemanticNode) -> (u32, u32, u32, u32) {
+        let p = &node.position;
+        (p.start_line as u32, p.start_col as u32, p.end_line as u32, p.end_col as u32)
+    }
+
+    // Issue #8: `return 1` -> `return 2` collapsed to an empty array_literal_expression.
+    #[test]
+    fn return_integer_literal_keeps_value_and_span() {
+        let old = parse_tree("function Answer { return 1 }\nAnswer\n");
+        let new = parse_tree("function Answer { return 2 }\nAnswer\n");
+        let (o, n) = (
+            find_type(&old, "integer_literal").expect("old return literal"),
+            find_type(&new, "integer_literal").expect("new return literal"),
+        );
+        assert_eq!((o.label.as_str(), n.label.as_str()), ("1", "2"));
+        assert_eq!(span(o), (0, 25, 0, 26));
+        assert_eq!(span(n), (0, 25, 0, 26));
+        assert_ne!(o.structural_hash, n.structural_hash);
+    }
+
+    // Issue #8: `1 -lt 2` -> `1 -gt 2` exposed only the operand wrappers.
+    #[test]
+    fn comparison_operator_is_retained_with_span() {
+        let old = parse_tree("Write-Output (1 -lt 2)\n");
+        let new = parse_tree("Write-Output (1 -gt 2)\n");
+        let (o, n) = (
+            find_type(&old, "comparison_operator").expect("old operator"),
+            find_type(&new, "comparison_operator").expect("new operator"),
+        );
+        assert_eq!((o.label.as_str(), n.label.as_str()), ("-lt", "-gt"));
+        assert_eq!(span(o), (0, 16, 0, 19));
+        assert_eq!(span(n), (0, 16, 0, 19));
+        assert_eq!(labels_for_type(&old, "integer_literal"), vec!["1", "2"]);
+    }
+
+    #[test]
+    fn real_literal_and_assignment_operator_are_retained() {
+        let tree = parse_tree("$x += 1.5\n");
+        assert_eq!(labels_for_type(&tree, "real_literal"), vec!["1.5"]);
+        assert_eq!(labels_for_type(&tree, "assignement_operator"), vec!["+="]);
+    }
+
+    // Controls: token-separating spacing stays layout-only; identity is byte-identical.
+    #[test]
+    fn spacing_and_identity_controls_project_identically() {
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        projection(&parse_tree("$x=1+2\nWrite-Output $x\n"), &mut a);
+        projection(&parse_tree("$x = 1 + 2\nWrite-Output $x\n"), &mut b);
+        assert_eq!(a, b);
+        assert!(a.contains(&("integer_literal".to_string(), "2".to_string())), "{a:?}");
+        let src = "Write-Output (1 -lt 2)\n";
+        assert_eq!(process_impl(src), process_impl(src));
     }
 
     fn labels_for_type(node: &SemanticNode, node_type: &str) -> Vec<String> {
